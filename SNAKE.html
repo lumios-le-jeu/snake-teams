@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Snake Teams 14x14</title>
+<meta http-equiv="X-UA-Compatible" content="IE=edge" />
+<style>
+  html, body { height:100%; margin:0; font-family: system-ui, Arial, sans-serif; background:#111; color:#eee; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 12px; }
+  h1{ font-size:20px; margin:8px 0; }
+  #hud{ display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; }
+  .panel{ background:#1d1d1d; border:1px solid #333; border-radius:10px; padding:10px 12px; min-width:180px; }
+  .team{ font-weight:bold; }
+  .blue{ color:#3db8ff; }
+  .green{ color:#66d26f; }
+  #canvas{ display:block; background:#f4d7cf; border:3px solid #2b2b2b; margin:12px 0; image-rendering: pixelated; }
+  button{ background:#2b2b2b; color:#fff; border:1px solid #555; border-radius:10px; padding:10px 14px; cursor:pointer; }
+  button:hover{ background:#3a3a3a; }
+  .kbd{ background:#222; border:1px solid #555; padding:1px 6px; border-radius:6px; font-family: monospace; }
+  #result{ white-space:pre-line; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Snake Teams 14×14 — 2 équipes, 4 serpents</h1>
+  <div id="hud">
+    <div class="panel"><div>Temps: <span id="time">120.0</span>s</div>
+      <div><span class="team blue">Bleu</span> total: <span id="scoreBlue">0</span></div>
+      <div><span class="team green">Vert</span> total: <span id="scoreGreen">0</span></div>
+      <div>Record (longueur max d'un serpent): <span id="record">0</span></div>
+    </div>
+    <div class="panel">
+      <div><span class="blue">BLEU 1</span> : Accél. <span class="kbd">Z</span> • Gauche <span class="kbd">Q</span> • Droite <span class="kbd">D</span></div>
+      <div><span class="green">VERT 1</span> : Accél. <span class="kbd">↑</span> • Gauche <span class="kbd">←</span> • Droite <span class="kbd">→</span></div>
+      <div><span class="blue">BLEU 2</span> : Accél. <span class="kbd">O</span> • Gauche <span class="kbd">K</span> • Droite <span class="kbd">M</span></div>
+      <div><span class="green">VERT 2</span> : Accél. <span class="kbd">8</span> (pavé num.) • Gauche <span class="kbd">4</span> • Droite <span class="kbd">6</span></div>
+    </div>
+    <div class="panel"><button id="restart">RECOMMENCER PARTIE</button>
+      <div id="result"></div></div>
+  </div>
+
+  <canvas id="canvas" width="560" height="560" aria-label="terrain 14x14"></canvas>
+</div>
+
+<script>
+// --- IE9+ compatibility helpers ---
+window.requestAnimationFrame = window.requestAnimationFrame || window.mozRequestAnimationFrame || window.webkitRequestAnimationFrame || function(cb){ return setTimeout(function(){ cb(+new Date()); }, 16); };
+window.cancelAnimationFrame = window.cancelAnimationFrame || window.mozCancelAnimationFrame || clearTimeout;
+
+(function(){
+  // ---- Constants ----
+  var COLS = 14, ROWS = 14;
+  var CELL = 40; // canvas is 560x560
+  var BOARD_W = COLS * CELL, BOARD_H = ROWS * CELL;
+  var EGGS_TARGET = 6;
+  var GAME_DURATION = 120.0; // seconds
+  var MAX_SPEED = 6.0; // cells per second
+  var BASE_SPEED = MAX_SPEED * 0.20; // 20%
+  var TONGUE_LEN = 1; // one cell ahead
+
+  // Directions (dx, dy)
+  var DIRS = { up:{x:0,y:-1}, right:{x:1,y:0}, down:{x:0,y:1}, left:{x:-1,y:0} };
+  function opposite(a,b){ return a.x + b.x === 0 && a.y + b.y === 0; }
+
+  // Teams
+  var TEAM_BLUE = 0, TEAM_GREEN = 1;
+
+  // Key codes map
+  var KEY = {
+    Z:90, Q:81, D:68,
+    O:79, K:75, M:77,
+    LEFT:37, UP:38, RIGHT:39,
+    NUM4:100, NUM6:102, NUM8:104
+  };
+
+  // Canvas
+  var canvas = document.getElementById('canvas');
+  var ctx = canvas.getContext('2d');
+
+  // HUD
+  var timeEl = document.getElementById('time');
+  var scoreBlueEl = document.getElementById('scoreBlue');
+  var scoreGreenEl = document.getElementById('scoreGreen');
+  var recordEl = document.getElementById('record');
+  var resultEl = document.getElementById('result');
+
+  // Game state
+  var snakes, eggs, timer, lastTs, rafId, recordMax;
+
+  function rndInt(min, max){ return Math.floor(Math.random()*(max-min+1))+min; }
+  function inBounds(x,y){ return x>=0 && x<COLS && y>=0 && y<ROWS; }
+  function cellKey(x,y){ return x+","+y; }
+  function dist2center(x,y){ var cx=(COLS-1)/2, cy=(ROWS-1)/2; var dx=x-cx, dy=y-cy; return Math.sqrt(dx*dx+dy*dy); }
+
+  function makeSnake(id, team, x, y, dir){
+    return {
+      id:id,
+      team:team,
+      head:{x:x, y:y},
+      dir:dir,
+      pendingTurn:null, // 'left' | 'right'
+      alive:true,
+      speed:BASE_SPEED,
+      progress:0, // progress toward next cell
+      body:[], // array of tail cells (oldest first). Length is tail length.
+      maxLength:0
+    };
+  }
+
+  function reset(){
+    // positions inspired by provided image
+    snakes = [
+      makeSnake('B1', TEAM_BLUE, 7, 1, DIRS.down),
+      makeSnake('B2', TEAM_BLUE, 7, 12, DIRS.up),
+      makeSnake('G1', TEAM_GREEN, 1, 7, DIRS.right),
+      makeSnake('G2', TEAM_GREEN, 12, 7, DIRS.left)
+    ];
+    eggs = [];
+    timer = GAME_DURATION;
+    lastTs = null;
+    recordMax = 0;
+    // initial eggs
+    refillEggs();
+    resultEl.textContent = '';
+    if(rafId) cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(loop);
+    draw();
+  }
+
+  function livingSnakes(){
+    var res = []; for(var i=0;i<snakes.length;i++){ if(snakes[i].alive) res.push(snakes[i]); }
+    return res;
+  }
+
+  function occupiedSet(){
+    // return a map of occupied cells by any head or body (for egg spawning & collisions)
+    var occ = {};
+    for(var i=0;i<snakes.length;i++){
+      var s = snakes[i];
+      if(s.alive) occ[cellKey(s.head.x, s.head.y)] = true;
+      for(var j=0;j<s.body.length;j++) occ[cellKey(s.body[j].x, s.body[j].y)] = true;
+    }
+    return occ;
+  }
+
+  function refillEggs(){
+    var occ = occupiedSet();
+    while(eggs.length < EGGS_TARGET){
+      var x = rndInt(0,COLS-1), y = rndInt(0,ROWS-1);
+      var key = cellKey(x,y);
+      // avoid spawning in current occupied cell or duplicate egg
+      var ok = !occ[key];
+      if(ok){
+        // also avoid placing two eggs on the same spot
+        var dup = false; for(var i=0;i<eggs.length;i++){ if(eggs[i].x===x && eggs[i].y===y){ dup=true; break; } }
+        if(!dup){ eggs.push({x:x,y:y}); }
+      }
+    }
+  }
+
+  // Input handling (pressed states)
+  var pressed = {};
+  document.addEventListener('keydown', function(e){ pressed[e.keyCode] = true; });
+  document.addEventListener('keyup', function(e){ pressed[e.keyCode] = false; });
+
+  function handleInput(){
+    // BLEU 1 (Z / Q / D)
+    turnIf(snakes[0], KEY.Q, KEY.D);
+    accelIf(snakes[0], KEY.Z);
+    // VERT 1 (UP / LEFT / RIGHT)
+    turnIf(snakes[2], KEY.LEFT, KEY.RIGHT);
+    accelIf(snakes[2], KEY.UP);
+    // BLEU 2 (O / K / M)
+    turnIf(snakes[1], KEY.K, KEY.M);
+    accelIf(snakes[1], KEY.O);
+    // VERT 2 (NUM8 / NUM4 / NUM6)
+    turnIf(snakes[3], KEY.NUM4, KEY.NUM6);
+    accelIf(snakes[3], KEY.NUM8);
+  }
+
+  function accelIf(snake, key){ if(!snake.alive) return; snake.speed = pressed[key] ? MAX_SPEED : BASE_SPEED; }
+
+  function turnIf(snake, leftKey, rightKey){
+    if(!snake.alive) return;
+    var wantLeft = !!pressed[leftKey];
+    var wantRight = !!pressed[rightKey];
+    if(wantLeft && !wantRight) snake.pendingTurn = 'left';
+    else if(wantRight && !wantLeft) snake.pendingTurn = 'right';
+  }
+
+  function applyTurn(s){
+    if(!s.pendingTurn) return;
+    var d = s.dir;
+    if(s.pendingTurn === 'left'){
+      if(d === DIRS.up) s.dir = DIRS.left;
+      else if(d === DIRS.left) s.dir = DIRS.down;
+      else if(d === DIRS.down) s.dir = DIRS.right;
+      else if(d === DIRS.right) s.dir = DIRS.up;
+    } else if(s.pendingTurn === 'right'){
+      if(d === DIRS.up) s.dir = DIRS.right;
+      else if(d === DIRS.right) s.dir = DIRS.down;
+      else if(d === DIRS.down) s.dir = DIRS.left;
+      else if(d === DIRS.left) s.dir = DIRS.up;
+    }
+    s.pendingTurn = null;
+  }
+
+  function step(dt){
+    timer -= dt; if(timer < 0) timer = 0;
+
+    handleInput();
+    // Move snakes according to their speed; resolve cell-by-cell when progress >= 1
+    for(var i=0;i<snakes.length;i++){
+      var s = snakes[i];
+      if(!s.alive) continue;
+      s.progress += s.speed * dt;
+      while(s.progress >= 1){
+        s.progress -= 1;
+        applyTurn(s); // apply one queued turn per cell step
+
+        var nx = s.head.x + s.dir.x;
+        var ny = s.head.y + s.dir.y;
+        // Out of bounds => die and LOSE tail
+        if(!inBounds(nx,ny)){
+          s.alive = false;
+          s.body = []; // lose tail
+          break;
+        }
+        // advance: push previous head into body
+        s.body.push({x:s.head.x, y:s.head.y});
+        s.head = {x:nx, y:ny};
+
+        // eat egg?
+        for(var e=0;e<eggs.length;e++){
+          if(eggs[e].x===nx && eggs[e].y===ny){
+            // grow by +1: (no need to pop tail this step)
+            eggs.splice(e,1);
+            refillEggs();
+            break;
+          }
+        }
+        // if didn't eat, maintain length by popping oldest
+        // BUT only if body length exceeds current tail length target. Here, tail length target equals body length itself when adding; so pop one per move unless we just ate.
+        // We can detect eating by: if there's another segment directly equal to new head? Simpler: track grew flag above; we already early-breaked only for egg; we need a flag
+      }
+    }
+
+    // After moving all snakes one or more cells, we need to trim tails for non-growth moves.
+    // To know whether a snake grew, we mark a flag during movement per step. Let's re-implement movement more explicitly per single-cell step.
+  }
+
+  // Re-implement step with clearer logic
+  function step(dt){
+    timer -= dt; if(timer < 0) timer = 0;
+    handleInput();
+
+    // We move in small increments: compute how many whole cells each snake should step this frame
+    for(var i=0;i<snakes.length;i++){
+      var s = snakes[i];
+      if(!s.alive) continue;
+      s.progress += s.speed * dt;
+    }
+
+    var anyStep = true;
+    while(anyStep){
+      anyStep = false;
+      // advance at most one cell per snake per while-iteration to handle collisions fairly
+      for(var i=0;i<snakes.length;i++){
+        var s = snakes[i];
+        if(!s.alive) continue;
+        if(s.progress >= 1){
+          anyStep = true;
+          s.progress -= 1;
+          applyTurn(s);
+          var nx = s.head.x + s.dir.x;
+          var ny = s.head.y + s.dir.y;
+          // Out of bounds => die and lose tail
+          if(!inBounds(nx,ny)){
+            s.alive = false; s.body = []; continue; }
+
+          // append current head to tail
+          s.body.push({x:s.head.x, y:s.head.y});
+          // default: move without growth -> drop oldest after moving
+          var grew = false;
+          // check egg
+          for(var e=0;e<eggs.length;e++){
+            if(eggs[e].x===nx && eggs[e].y===ny){ eggs.splice(e,1); grew=true; refillEggs(); break; }
+          }
+
+          // move head
+          s.head = {x:nx, y:ny};
+
+          // collisions with tails: if head hits ANY tail (including own), snake loses its tail only
+          if(collidesAnyTail(s)){
+            s.body = []; // keep head only
+          } else if(!grew){
+            // maintain length
+            if(s.body.length>0) s.body.shift();
+          }
+
+          // update record
+          if(s.body.length > s.maxLength) s.maxLength = s.body.length;
+          if(s.maxLength > recordMax) recordMax = s.maxLength;
+        }
+      }
+    }
+
+    // Tongue checks: if a tongue cell overlaps another HEAD, that other snake dies (keeps tail)
+    for(var i=0;i<snakes.length;i++){
+      var attacker = snakes[i];
+      if(!attacker.alive) continue;
+      var tx = attacker.head.x + attacker.dir.x * TONGUE_LEN;
+      var ty = attacker.head.y + attacker.dir.y * TONGUE_LEN;
+      if(!inBounds(tx,ty)) continue; // tongue off-board has no effect
+      for(var j=0;j<snakes.length;j++){
+        if(i===j) continue;
+        var victim = snakes[j];
+        if(!victim.alive) continue;
+        if(victim.head.x===tx && victim.head.y===ty){
+          victim.alive = false; // do NOT clear tail
+        }
+      }
+    }
+
+    // Update HUD
+    var blueTotal = 0, greenTotal = 0;
+    for(var i=0;i<snakes.length;i++){
+      var s = snakes[i];
+      var len = s.body.length;
+      if(s.team===TEAM_BLUE) blueTotal += len; else greenTotal += len;
+    }
+    scoreBlueEl.textContent = blueTotal;
+    scoreGreenEl.textContent = greenTotal;
+    recordEl.textContent = recordMax;
+    timeEl.textContent = timer.toFixed(1);
+
+    if(timer<=0){ endGame(); }
+  }
+
+  function collidesAnyTail(s){
+    // Create a set of all tail cells
+    for(var i=0;i<snakes.length;i++){
+      var other = snakes[i];
+      // ignore heads, only tails
+      for(var t=0;t<other.body.length;t++){
+        if(s.head.x===other.body[t].x && s.head.y===other.body[t].y) return true;
+      }
+    }
+    return false;
+  }
+
+  function draw(){
+    // background
+    ctx.clearRect(0,0,BOARD_W,BOARD_H);
+
+    // grid cells (light)
+    ctx.strokeStyle = '#2b2b2b';
+    ctx.lineWidth = 1;
+    for(var x=0;x<=COLS;x++){ ctx.beginPath(); ctx.moveTo(x*CELL+0.5,0); ctx.lineTo(x*CELL+0.5,BOARD_H); ctx.stroke(); }
+    for(var y=0;y<=ROWS;y++){ ctx.beginPath(); ctx.moveTo(0,y*CELL+0.5); ctx.lineTo(BOARD_W,y*CELL+0.5); ctx.stroke(); }
+
+    // draw bases as arcs (like the screenshot)
+    drawBaseArc(7,0, 'blue', Math.PI, 0); // top center
+    drawBaseArc(7,13,'blue', 0, Math.PI); // bottom center
+    drawBaseArc(0,7, 'green', -Math.PI/2, Math.PI/2); // left middle
+    drawBaseArc(13,7,'green', Math.PI/2, -Math.PI/2); // right middle
+
+    // eggs
+    for(var i=0;i<eggs.length;i++){
+      var e = eggs[i];
+      drawCell(e.x,e.y,'#ffef7d');
+    }
+
+    // tails
+    for(var s=0;s<snakes.length;s++){
+      var snake = snakes[s];
+      var col = snake.team===TEAM_BLUE ? '#33aaff' : '#59c765';
+      for(var t=0;t<snake.body.length;t++) drawCell(snake.body[t].x, snake.body[t].y, col);
+    }
+
+    // heads + tongues
+    for(var s=0;s<snakes.length;s++){
+      var snake = snakes[s];
+      if(snake.alive){
+        var col = snake.team===TEAM_BLUE ? '#33aaff' : '#59c765';
+        drawHead(snake.head.x, snake.head.y, col);
+        // tongue
+        var tx = snake.head.x + snake.dir.x*TONGUE_LEN;
+        var ty = snake.head.y + snake.dir.y*TONGUE_LEN;
+        if(inBounds(tx,ty)) drawCellOutline(tx,ty,'#ffffff');
+      } else {
+        // draw dead head faint
+        drawHead(snake.head.x, snake.head.y, '#777');
+      }
+    }
+  }
+
+  function drawCell(x,y,color){
+    ctx.fillStyle = color;
+    ctx.fillRect(x*CELL+2, y*CELL+2, CELL-4, CELL-4);
+  }
+  function drawCellOutline(x,y,color){
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.strokeRect(x*CELL+6, y*CELL+6, CELL-12, CELL-12);
+  }
+  function drawHead(x,y,color){
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x*CELL+CELL/2, y*CELL+CELL/2, CELL*0.36, 0, Math.PI*2);
+    ctx.fill();
+  }
+  function drawBaseArc(cx,cy,color,start,end){
+    var px=cx*CELL+CELL/2, py=cy*CELL+CELL/2;
+    ctx.beginPath(); ctx.lineWidth = 14; ctx.strokeStyle = color==='blue' ? '#33aaff' : '#59c765';
+    ctx.arc(px,py, CELL*0.6, start, end, false); ctx.stroke();
+  }
+
+  function loop(ts){
+    if(lastTs==null) lastTs = ts;
+    var dt = Math.min(0.05, (ts - lastTs)/1000); // clamp to 50ms
+    lastTs = ts;
+    step(dt);
+    draw();
+    if(timer>0) rafId = requestAnimationFrame(loop);
+  }
+
+  function endGame(){
+    // compute totals
+    var blueTotal = 0, greenTotal = 0;
+    var blueAlive=0, greenAlive=0;
+    var blueMax=0, greenMax=0;
+    var blueClosest = Infinity, greenClosest = Infinity;
+    for(var i=0;i<snakes.length;i++){
+      var s = snakes[i];
+      var len = s.body.length;
+      if(s.team===TEAM_BLUE){
+        blueTotal += len; if(s.alive) blueAlive++; if(len>blueMax) blueMax=len;
+        var d = dist2center(s.head.x, s.head.y); if(d<blueClosest) blueClosest=d;
+      } else {
+        greenTotal += len; if(s.alive) greenAlive++; if(len>greenMax) greenMax=len;
+        var d2 = dist2center(s.head.x, s.head.y); if(d2<greenClosest) greenClosest=d2;
+      }
+    }
+
+    var winner = null; var reason = '';
+    if(blueTotal !== greenTotal){ winner = (blueTotal>greenTotal) ? 'BLEU' : 'VERT'; reason = 'Somme des queues'; }
+    else if(blueMax !== greenMax){ winner = (blueMax>greenMax) ? 'BLEU' : 'VERT'; reason = 'Robot avec la plus grande queue'; }
+    else if(blueAlive !== greenAlive){ winner = (blueAlive>greenAlive) ? 'BLEU' : 'VERT'; reason = 'Plus de robots vivants'; }
+    else if(blueClosest !== greenClosest){ winner = (blueClosest<greenClosest) ? 'BLEU' : 'VERT'; reason = 'Robot le plus proche du centre'; }
+    else { winner = 'ÉGALITÉ PARFAITE'; reason = 'indécidable'; }
+
+    var text = '';
+    text += 'FIN DE PARTIE\n';
+    text += 'Total Bleu: '+blueTotal+' | Total Vert: '+greenTotal+'\n';
+    text += 'Max queue Bleu: '+blueMax+' | Max queue Vert: '+greenMax+'\n';
+    text += 'Robots vivants Bleu: '+blueAlive+' | Vert: '+greenAlive+'\n';
+    text += 'Plus proche du centre Bleu: '+(isFinite(blueClosest)?blueClosest.toFixed(2):'-')+' | Vert: '+(isFinite(greenClosest)?greenClosest.toFixed(2):'-')+'\n';
+    text += 'Record longueur (tous) = '+recordMax+'\n\n';
+    text += 'Vainqueur: '+winner+'  — Critère: '+reason;
+    resultEl.textContent = text;
+  }
+
+  document.getElementById('restart').addEventListener('click', reset);
+
+  // initial start
+  reset();
+})();
+</script>
+</body>
+</html>
