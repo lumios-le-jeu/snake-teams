@@ -178,21 +178,41 @@ window.cancelAnimationFrame = window.cancelAnimationFrame || window.mozCancelAni
       }
     }
     // Langues : tuent une tête sans vider sa queue
-    for(var i=0;i<snakes.length;i++){
-      var a=snakes[i]; if(!a.alive) continue;
-      var tx=a.head.x+a.dir.x*TONGUE_LEN, ty=a.head.y+a.dir.y*TONGUE_LEN;
-      if(!inBounds(tx,ty)) continue;
-      for(var j=0;j<snakes.length;j++){
-        if(i===j) continue;
-        var v=snakes[j]; if(!v.alive) continue;
-        if(v.head.x===tx&&v.head.y===ty){ v.alive=false; }
+    // Langues : tuent une tête sans vider sa queue
+    for (var i = 0; i < snakes.length; i++) {
+      var a = snakes[i];
+      if (!a.alive) continue;
+      var tx = a.head.x + a.dir.x * TONGUE_LEN;
+      var ty = a.head.y + a.dir.y * TONGUE_LEN;
+      if (!inBounds(tx, ty)) continue;
+
+      for (var j = 0; j < snakes.length; j++) {
+        if (i === j) continue;
+        var v = snakes[j];
+        if (!v.alive) continue;
+        if (v.head.x === tx && v.head.y === ty) {
+          // ⚠️ on tue SEULEMENT la tête
+          v.alive = false;
+          // NE PAS faire: v.body = [];
+        }
       }
     }
+
     var b=0,g=0; for(var i=0;i<snakes.length;i++){var sn=snakes[i], len=sn.body.length; if(sn.team===TEAM_BLUE) b+=len; else g+=len;}
     scoreBlueEl.textContent=b; scoreGreenEl.textContent=g; recordEl.textContent=recordMax; timeEl.textContent=timer.toFixed(1);
     if(timer<=0) endGame();
   }
-  function collidesAnyTail(s){for(var i=0;i<snakes.length;i++){var o=snakes[i]; for(var t=0;t<o.body.length;t++){if(s.head.x===o.body[t].x && s.head.y===o.body[t].y) return true;}} return false}
+  //function collidesAnyTail(s){for(var i=0;i<snakes.length;i++){var o=snakes[i]; for(var t=0;t<o.body.length;t++){if(s.head.x===o.body[t].x && s.head.y===o.body[t].y) return true;}} return false}
+
+  function collidesAnyTail(s) {
+    for (var i = 0; i < snakes.length; i++) {
+      var o = snakes[i];
+      for (var t = 0; t < o.body.length; t++) {
+        if (s.head.x === o.body[t].x && s.head.y === o.body[t].y) return true;
+      }
+    }
+    return false;
+  }
 
   // Dessin
   function draw(){
